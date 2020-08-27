@@ -564,3 +564,10 @@ impl<T> Clone for Ref<T> {
 }
 
 impl<T> Copy for Ref<T> {}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct TraitObject {
+    pub data: *mut (),
+    pub vtable: *mut (),
+}

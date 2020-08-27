@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #[macro_use]
 pub mod utils;
 pub(crate) mod accounting;
@@ -5,8 +6,9 @@ pub(crate) mod collectors;
 pub mod locks;
 pub(crate) mod mem_map;
 pub(crate) mod spaces;
+pub(crate) mod types;
 use spaces::*;
-pub trait GcObject {
+/*pub trait GcObj {
     const VTABLE: VTable;
 }
 
@@ -18,25 +20,25 @@ pub struct VTable {
     pub instance_size: usize,
     pub determine_size: Option<unsafe fn(this: utils::Ref<GcBox<()>>) -> usize>,
 }
-
+*/
 pub struct GCHeader {
     /// Static reference to vtable of this object.
-    vtable: &'static VTable,
+    vtable: *mut (),
 
     #[cfg(feature = "incremental")]
     next: utils::Ref<GcBox<()>>,
 }
 
-impl utils::Ref<GcBox<()>> {
+impl<T: GcObj> Ref<GcBox<T>> {
     pub fn size(self) -> usize {
-        if self.header.vtable.instance_size != 0 {
-            return self.header.vtable.instance_size + core::mem::size_of::<GCHeader>();
-        } else {
-            if let Some(f) = self.header.vtable.determine_size {
-                unsafe { f(self) + core::mem::size_of::<GCHeader>() }
-            } else {
-                core::mem::size_of::<GCHeader>()
-            }
+        std::mem::size_of_val(self.trait_object())
+    }
+    pub fn trait_object<'a>(self) -> &'a mut dyn GcObj {
+        unsafe {
+            std::mem::transmute(TraitObject {
+                vtable: self.header.vtable,
+                data: &self.val as *const _ as *mut _,
+            })
         }
     }
 }
@@ -75,7 +77,7 @@ struct RootInner<'a> {
     pub obj: Ref<GcBox<()>>,
 }
 
-pub struct Root<'a, T: GcObject> {
+pub struct Root<'a, T: GcObj> {
     inner: Ref<RootInner<'a>>,
     _marker: std::marker::PhantomData<T>,
 }
@@ -85,15 +87,15 @@ pub struct RootList<'a> {
     lock: locks::Mutex<()>,
     _marker: core::marker::PhantomData<&'a Root<'a, ()>>,
 }
-
-impl GcObject for () {
+/*
+impl GcObj for () {
     const VTABLE: VTable = VTable {
         visit_fn: None,
         finalize_fn: None,
         determine_size: None,
         instance_size: 0,
     };
-}
+}*/
 
 impl<'a> RootList<'a> {
     pub fn new() -> Self {
@@ -103,7 +105,7 @@ impl<'a> RootList<'a> {
             _marker: Default::default(),
         }
     }
-    pub fn root<T: GcObject>(&mut self, o: Ref<GcBox<T>>) -> Root<'a, T> {
+    pub fn root<T: GcObj>(&mut self, o: Ref<GcBox<T>>) -> Root<'a, T> {
         let mut r = Ref::new(Box::into_raw(Box::new(RootInner {
             next: Ref::null(),
             prev: Ref::null(),
@@ -121,7 +123,7 @@ impl<'a> RootList<'a> {
             _marker: Default::default(),
         }
     }
-    pub fn unroot<T: GcObject>(&mut self, r: Root<'a, T>) {
+    pub fn unroot<T: GcObj>(&mut self, r: Root<'a, T>) {
         drop(r)
     }
 
@@ -133,7 +135,7 @@ impl<'a> RootList<'a> {
         }
     }
 }
-impl<'a, T: GcObject> Clone for Root<'a, T> {
+impl<'a, T: GcObj> Clone for Root<'a, T> {
     fn clone(&self) -> Self {
         let lock = self.inner.list.lock.lock();
         let root_inner = Ref::new(Box::into_raw(Box::new(RootInner {
@@ -155,7 +157,7 @@ impl<'a, T: GcObject> Clone for Root<'a, T> {
     }
 }
 
-impl<'a, T: GcObject> Drop for Root<'a, T> {
+impl<'a, T: GcObj> Drop for Root<'a, T> {
     fn drop(&mut self) {
         let inner = self.inner;
         let lock = inner.list.lock.lock();
@@ -176,7 +178,12 @@ impl<'a, T: GcObject> Drop for Root<'a, T> {
     }
 }
 impl<'a> Heap<'a> {
-    pub fn new(max_mem: usize, use_gen_gc: bool, print_timings: bool) -> Box<Self> {
+    pub fn new(
+        max_mem: usize,
+        use_gen_gc: bool,
+        print_timings: bool,
+        threshold: usize,
+    ) -> Box<Self> {
         let mut this = Box::new(Self {
             stack: AtomicBool::new(false),
             mutator_running: AtomicBool::new(true),
@@ -189,7 +196,7 @@ impl<'a> Heap<'a> {
             total_ms_time: AtomicU64::new(0),
             total_sticky_time: AtomicU64::new(0),
             allocated: AtomicUsize::new(0),
-            threshold: AtomicUsize::new(16 * 1024),
+            threshold: AtomicUsize::new(threshold),
             card_table: None,
             gc: Box::new(collectors::DummyGc {}),
             ms_iters: AtomicUsize::new(0),
@@ -214,8 +221,59 @@ impl<'a> Heap<'a> {
         this.space = Some(space);
         this
     }
+    /// This function allows to allocate dynamic memory for arrays or other dynamically sized objects
+    /// It is unsafe because GC may not properly scan object that is not allocated by GC itself.
+    pub unsafe fn unsafe_allocate_nogc(&mut self, vtable: *mut (), size: usize) -> Ref<GcBox<()>> {
+        let mem = self
+            .space()
+            .alloc_with_growth(core::mem::size_of::<GcBox<()>>() + size);
 
-    pub fn allocate<T: GcObject + 'static>(&mut self, val: T) -> Root<'a, T> {
+        if mem.is_non_null() {
+            mem.to_mut_ptr::<GcBox<()>>().write(GcBox {
+                header: GCHeader {
+                    #[cfg(feature = "incremental")]
+                    next: Ref::null(),
+                    vtable: vtable,
+                },
+                val: (),
+            });
+            self.alloc_stack().push(Ref::new(mem.to_ptr()));
+            self.allocated
+                .fetch_add(core::mem::size_of::<GcBox<()>>() + size, Ordering::Relaxed);
+            return Ref::new(mem.to_ptr());
+        }
+
+        self.gc();
+        if mem.is_non_null() {
+            mem.to_mut_ptr::<GcBox<()>>().write(GcBox {
+                header: GCHeader {
+                    #[cfg(feature = "incremental")]
+                    next: Ref::null(),
+                    vtable,
+                },
+                val: (),
+            });
+            self.allocated
+                .fetch_add(core::mem::size_of::<GcBox<()>>() + size, Ordering::Relaxed);
+            self.alloc_stack().push(Ref::new(mem.to_ptr()));
+
+            return Ref::new(mem.to_ptr());
+        }
+        panic!("Out of memory");
+    }
+    pub fn should_collect(&self) -> bool {
+        let should_collect =
+            self.allocated.load(Ordering::Relaxed) >= self.threshold.load(Ordering::Relaxed);
+        should_collect
+    }
+    pub fn allocate<T: GcObj + 'static>(&mut self, val: T) -> Root<'a, T> {
+        let should_collect = self.allocated.load(Ordering::Relaxed)
+            + core::mem::size_of::<GcBox<T>>()
+            >= self.threshold.load(Ordering::Relaxed);
+        if should_collect {
+            self.gc();
+        }
+        let vtable = gcvtbl_of(&val);
         let mem = self
             .space()
             .alloc_with_growth(core::mem::size_of::<GcBox<T>>());
@@ -225,12 +283,13 @@ impl<'a> Heap<'a> {
                     header: GCHeader {
                         #[cfg(feature = "incremental")]
                         next: Ref::null(),
-                        vtable: &T::VTABLE,
+                        vtable: vtable,
                     },
                     val,
                 });
                 self.alloc_stack().push(Ref::new(mem.to_ptr()));
-
+                self.allocated
+                    .fetch_add(core::mem::size_of::<GcBox<T>>(), Ordering::Relaxed);
                 return self.rootlist.root(Ref::new(mem.to_ptr::<GcBox<T>>()));
             }
 
@@ -244,11 +303,12 @@ impl<'a> Heap<'a> {
                     header: GCHeader {
                         #[cfg(feature = "incremental")]
                         next: Ref::null(),
-                        vtable: &T::VTABLE,
+                        vtable: vtable,
                     },
                     val,
                 });
-
+                self.allocated
+                    .fetch_add(core::mem::size_of::<GcBox<T>>(), Ordering::Relaxed);
                 return self.rootlist.root(Ref::new(mem.to_ptr::<GcBox<T>>()));
             }
             panic!("Out of memory");
@@ -258,12 +318,26 @@ impl<'a> Heap<'a> {
     pub fn gc(&mut self) {
         self.gc.run_phases();
         self.space().trim();
+        let prev = self.threshold.load(Ordering::Relaxed);
         if self.allocated.load(Ordering::Relaxed) >= self.threshold.load(Ordering::Relaxed) {
             self.threshold.store(
                 (self.allocated.load(Ordering::Relaxed) as f64 / 0.75) as usize,
                 Ordering::Relaxed,
             );
         }
+        if prev == self.threshold.load(Ordering::Relaxed) {
+            println!(" GC threshold unchanged from {}", formatted_size(prev));
+        } else {
+            println!(
+                " GC threshold changed from {} to {}",
+                formatted_size(prev),
+                formatted_size(self.threshold.load(Ordering::Relaxed))
+            );
+        }
+    }
+
+    pub fn root<T: GcObj>(&mut self, handle: Handle<T>) -> Root<'a, T> {
+        self.rootlist.root(Ref::new(handle.ptr.as_ptr()))
     }
 
     pub(crate) fn space(&self) -> &dlmalloc_space::DLMallocSpace {
@@ -303,19 +377,27 @@ impl<'a> Heap<'a> {
     pub(crate) fn swap_stacks(&self) {
         self.stack.fetch_xor(true, Ordering::Relaxed);
     }
+    pub fn from_config(config: HeapConfig) -> Box<Self> {
+        Heap::new(
+            config.heap_size,
+            config.use_gen_gc,
+            config.print_timings,
+            config.threshold,
+        )
+    }
 }
 
 #[repr(C)]
-pub struct GcBox<T: GcObject> {
+pub struct GcBox<T: GcObj> {
     header: GCHeader,
     val: T,
 }
 
-pub struct Handle<T: GcObject> {
+pub struct Handle<T: GcObj> {
     ptr: std::ptr::NonNull<GcBox<T>>,
 }
 
-impl<T: GcObject> Handle<T> {
+impl<T: GcObj> Handle<T> {
     pub fn gc_ptr(&self) -> *const GcBox<()> {
         self.ptr.cast::<_>().as_ptr()
     }
@@ -327,7 +409,7 @@ impl<T: GcObject> Handle<T> {
     }
 }
 
-impl<'a, T: GcObject> Root<'a, T> {
+impl<'a, T: GcObj> Root<'a, T> {
     pub fn to_heap(self) -> Handle<T> {
         Handle {
             ptr: unsafe {
@@ -337,34 +419,234 @@ impl<'a, T: GcObject> Root<'a, T> {
     }
 }
 
-impl<T: GcObject> std::ops::Deref for Handle<T> {
+impl<T: GcObj> std::ops::Deref for Handle<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { &(&*self.ptr.as_ptr()).val }
     }
 }
 
-impl<T: GcObject> std::ops::DerefMut for Handle<T> {
+impl<T: GcObj> std::ops::DerefMut for Handle<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut (&mut *self.ptr.as_ptr()).val }
     }
 }
 
-impl<T: GcObject> Copy for Handle<T> {}
-impl<T: GcObject> Clone for Handle<T> {
+impl<T: GcObj> Copy for Handle<T> {}
+impl<T: GcObj> Clone for Handle<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'a, T: GcObject> std::ops::Deref for Root<'a, T> {
+impl<'a, T: GcObj> std::ops::Deref for Root<'a, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { &(&*self.inner.obj.cast::<GcBox<T>>().ptr).val }
     }
 }
 
-impl<'a, T: GcObject> std::ops::DerefMut for Root<'a, T> {
+impl<'a, T: GcObj> std::ops::DerefMut for Root<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut (&mut *self.inner.obj.cast::<GcBox<T>>().ptr).val }
     }
+}
+
+pub struct HeapConfig {
+    incremental: bool,
+    heap_size: usize,
+    use_gen_gc: bool,
+    print_timings: bool,
+    use_conc_gc: bool,
+    threshold: usize,
+}
+
+impl Default for HeapConfig {
+    fn default() -> Self {
+        Self {
+            incremental: false,
+            heap_size: 4 * 1024 * 1024,
+            use_conc_gc: false,
+            use_gen_gc: false,
+            threshold: 16 * 1024,
+            print_timings: false,
+        }
+    }
+}
+
+pub const MIN_HEAP_SIZE: usize = 64 * 1024;
+
+impl HeapConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn incremental(mut self, x: bool) -> Self {
+        self.incremental = x;
+        self
+    }
+
+    pub fn cocnurrent(mut self, x: bool) -> Self {
+        self.use_conc_gc = x;
+        self
+    }
+
+    pub fn generational(mut self, x: bool) -> Self {
+        self.use_gen_gc = x;
+        self
+    }
+
+    pub fn print_timings(mut self, x: bool) -> Self {
+        self.print_timings = x;
+        self
+    }
+    pub fn threshold(mut self, x: usize) -> Self {
+        self.threshold = if x < 16 * 1024 { self.threshold } else { x };
+        self
+    }
+    pub fn heap_size(mut self, size: usize) -> Self {
+        self.heap_size = if size < MIN_HEAP_SIZE {
+            MIN_HEAP_SIZE
+        } else {
+            size
+        };
+        self
+    }
+}
+
+/// Initializes thread-local heap.
+pub fn initialize_heap(config: HeapConfig) {
+    HEAP.with(|heap| {
+        heap.get_or_init(|| {
+            Mutex::new(Heap::new(
+                config.heap_size,
+                config.use_gen_gc,
+                config.print_timings,
+                config.threshold,
+            ))
+        });
+    })
+}
+/// Allocates object in thread-local heap.
+pub fn allocate<T: GcObj + 'static>(value: T) -> Root<'static, T> {
+    HEAP.with(|x| {
+        let mut heap = x
+            .get_or_init(|| Mutex::new(Heap::new(4 * 1024 * 1024, false, false, 16 * 1024)))
+            .lock();
+
+        heap.allocate(value)
+    })
+}
+/// Puts `value` to thread-local heap root list.
+pub fn root<T: GcObj + 'static>(value: Handle<T>) -> Root<'static, T> {
+    HEAP.with(|x| {
+        let mut heap = x
+            .get_or_init(|| Mutex::new(Heap::new(4 * 1024 * 1024, false, false, 16 * 1024)))
+            .lock();
+
+        heap.rootlist.root(Ref::new(value.ptr.as_ptr()))
+    })
+}
+
+use locks::Mutex;
+use once_cell::unsync::OnceCell as UCell;
+thread_local! {
+    static HEAP: UCell<Mutex<Box<Heap<'static>>>> = UCell::new();
+}
+macro_rules! simple_gc_ty {
+    ($($t: ty)*) => {
+        $(
+            impl Mark for $t {}
+            impl Finalize for $t {}
+            impl GcObj for $t {}
+        )*
+    };
+}
+
+macro_rules! simple_gc_ty_drop {
+    ($($t: ty)*) => {
+        $(
+            impl Mark for $t {}
+            impl Finalize for $t {}
+            impl GcObj for $t {}
+
+
+        )*
+    };
+}
+
+simple_gc_ty!(
+    bool
+    i8 u8
+    i16 u16
+    i32 u32
+    i64 u64
+    i128 u128
+    f32 f64
+
+);
+
+impl Mark for () {}
+impl Finalize for () {}
+impl GcObj for () {}
+
+simple_gc_ty_drop!(
+    String
+    std::fs::File
+);
+/*
+impl<T: GcObj> GcObj for Vec<Handle<T>> {
+    const VTABLE: VTable = VTable {
+        visit_fn: Some({
+            unsafe fn visit(this: Ref<GcBox<()>>, visit: &mut dyn FnMut(*const GcBox<()>)) {
+                for value in this.cast::<GcBox<Vec<Handle<()>>>>().val.iter() {
+                    visit(value.gc_ptr());
+                }
+            }
+            visit
+        }),
+        finalize_fn: Some({
+            unsafe fn fin(this: Ref<GcBox<()>>) {
+                std::ptr::drop_in_place(this.cast::<GcBox<Vec<Handle<()>>>>().ptr);
+            }
+            fin
+        }),
+        instance_size: core::mem::size_of::<Vec<Handle<T>>>(),
+        determine_size: None,
+    };
+}*/
+impl<T: GcObj> Finalize for Vec<T> {}
+impl<T: GcObj> GcObj for Vec<T> {}
+impl<T: GcObj> Mark for Vec<T> {
+    fn mark(&self, visit: &mut dyn FnMut(*const GcBox<()>)) {
+        for val in self.iter() {
+            val.mark(visit);
+        }
+    }
+}
+
+/// Trait used internally to mark `Handle` and `Root`. Do not write your own code in `mark` function.
+pub trait Mark {
+    fn mark(&self, _visit: &mut dyn FnMut(*const GcBox<()>)) {}
+}
+
+impl<T: GcObj> Mark for Handle<T> {
+    fn mark(&self, visit: &mut dyn FnMut(*const GcBox<()>)) {
+        visit(self.gc_ptr());
+    }
+}
+
+impl<T: GcObj> Mark for Root<'_, T> {
+    fn mark(&self, visit: &mut dyn FnMut(*const GcBox<()>)) {
+        visit(self.inner.obj.ptr);
+    }
+}
+
+/// A trait used to invoke finalization code when object is deleted.
+pub trait Finalize {
+    fn finalize(&mut self) {}
+}
+
+pub trait GcObj: Finalize + Mark {}
+
+fn gcvtbl_of(x: &dyn GcObj) -> *mut () {
+    unsafe { std::mem::transmute::<_, TraitObject>(x).vtable }
 }

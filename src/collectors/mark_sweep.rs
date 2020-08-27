@@ -93,8 +93,13 @@ impl<'a> MarkAndSweep<'a> {
                         log::info!("Sweep ->{:p}", (*ptrs.offset(i as _)).ptr);
                         let ptr = ptrs.offset(i as _);
                         let p = *ptr;
-                        self.heap.allocated.fetch_sub(p.size(), Ordering::Relaxed);
-                        self.freed += p.size();
+                        let size = p.size();
+                        ptr.trait_object().finalize();
+                        unsafe {
+                            std::ptr::drop_in_place(ptr.trait_object() as *mut dyn GcObj);
+                        }
+                        self.heap.allocated.fetch_sub(size, Ordering::Relaxed);
+                        self.freed += size;
                         self.heap.space().free(Address::from_ptr(p.ptr));
                         //self.heap.in_heap.clear(Address::from_ptr(p.ptr));
                         bitmap.clear(Address::from_ptr(p.ptr));
@@ -124,7 +129,7 @@ impl<'a> MarkAndSweep<'a> {
     }
     fn scan_object(&mut self, obj: Ref<GcBox<()>>) {
         if obj.is_non_null() {
-            if let Some(x) = obj.header.vtable.visit_fn {
+            /*if let Some(x) = obj.trait_object().visit_fn {
                 unsafe {
                     x(obj, &mut |ptr| {
                         if ptr.is_null() == false {
@@ -132,7 +137,12 @@ impl<'a> MarkAndSweep<'a> {
                         }
                     });
                 }
-            }
+            }*/
+            obj.trait_object().mark(&mut |ptr| {
+                if ptr.is_null() == false {
+                    self.mark_object_non_null(Ref::new(ptr), obj);
+                }
+            });
         }
     }
     fn mark_object(&mut self, obj: Ref<GcBox<()>>) {
