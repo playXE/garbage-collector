@@ -1,5 +1,4 @@
-use vm::utils::Ref;
-use vm::*;
+use garbage_collector::*;
 pub struct Foo {
     next: Option<Handle<Foo>>,
 }
@@ -15,17 +14,29 @@ impl Mark for Foo {
 }
 impl Finalize for Foo {
     fn finalize(&mut self) {
-        println!("ded");
+        //println!("ded");
     }
 }
 
 fn main() {
-    //    simple_logger::init().unwrap();
-
-    let mut heap = Heap::from_config(HeapConfig::new().print_timings(true).heap_size(64 * 1024));
-
+    let mut heap = Heap::from_config(
+        HeapConfig::new()
+            .print_timings(true)
+            .generational(false)
+            .heap_size(64 * 1024),
+    );
+    let val2 = heap.allocate(Foo { next: None });
+    let mut val = heap.allocate(Foo { next: None });
+    val.next = Some(heap.allocate(Foo { next: None }).to_heap());
+    drop(val);
     let mut val = heap.allocate(Foo { next: None });
     val.next = Some(heap.allocate(Foo { next: None }).to_heap());
     drop(val);
     heap.gc();
+    let v1 = heap.allocate(Foo { next: None });
+
+    drop(val2);
+    //drop(v1);
+    heap.gc();
+    println!("done {:p}", &*v1);
 }

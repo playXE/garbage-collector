@@ -1,5 +1,5 @@
+use crate::utils::Ref;
 use crate::*;
-use crate::{utils::Ref, GCHeader};
 #[cfg(all(feature = "incremental", feature = "concurrent"))]
 pub mod __stack {
     use super::*;
@@ -39,6 +39,7 @@ pub mod __stack {
 #[cfg(all(feature = "incremental", not(feature = "concurrent")))]
 mod __stack {
     use super::GcBox;
+    use super::*;
     use crate::locks::Mutex;
     use std::collections::VecDeque;
     pub struct Drain<'a, T> {
@@ -152,6 +153,7 @@ mod __stack {
 
 #[cfg(all(not(feature = "incremental"), not(feature = "concurrent")))]
 pub mod __stack {
+    use super::*;
     use crate::locks::Mutex;
     use std::collections::VecDeque;
     pub struct Drain<'a, T> {
@@ -177,7 +179,9 @@ pub mod __stack {
         pub fn pop(&self) -> Option<T> {
             self.data.lock().pop_back()
         }
-
+        pub fn clear(&self) {
+            self.data.lock().clear();
+        }
         pub fn drain<'a>(&self) -> Drain<'a, T> {
             Drain {
                 data: std::mem::replace(&mut *self.data.lock(), VecDeque::new()),

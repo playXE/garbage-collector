@@ -8,16 +8,16 @@ use crate::*;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 pub struct StickyHeap<'a> {
-    total_freed_ms: AtomicUsize,
-    total_freed_sticky: AtomicUsize,
-    total_ms_time: AtomicU64,
-    total_sticky_time: AtomicU64,
-    ms_iters: AtomicUsize,
-    next_sticky: AtomicBool,
-    ms: Box<MarkAndSweep<'a>>,
-    last_freed: usize,
-    last_dur: u64,
-    sticky: Box<StickyMarkAndSweep<'a>>,
+    pub total_freed_ms: AtomicUsize,
+    pub total_freed_sticky: AtomicUsize,
+    pub total_ms_time: AtomicU64,
+    pub total_sticky_time: AtomicU64,
+    pub ms_iters: AtomicUsize,
+    pub next_sticky: AtomicBool,
+    pub ms: Box<MarkAndSweep<'a>>,
+    pub last_freed: usize,
+    pub last_dur: u64,
+    pub sticky: Box<StickyMarkAndSweep<'a>>,
 }
 
 impl<'a> StickyHeap<'a> {
@@ -71,6 +71,12 @@ impl<'a, 'b: 'a> super::GarbageCollector<'a> for StickyHeap<'b> {
                 self.next_sticky.store(false, Ordering::Relaxed);
             }
         }
+        if self.ms.heap.print_timings {
+            println!(
+                "Next GC is sticky? {}",
+                self.next_sticky.load(Ordering::Relaxed)
+            );
+        }
     }
 
     fn duration(&self) -> u64 {
@@ -96,7 +102,6 @@ pub struct StickyMarkAndSweep<'a> {
 
 impl<'a> StickyMarkAndSweep<'a> {
     pub fn run_phases(&mut self) {
-        self.current_space_bitmap = Some(self.heap.space().c.mark_bitmap().clone());
         let start = std::time::Instant::now();
 
         // For sticky GC, we want to bind the bitmaps of all spaces as the allocation stack lets us
@@ -104,6 +109,7 @@ impl<'a> StickyMarkAndSweep<'a> {
         // and live bitmap is that marking the objects will place them in the live bitmap.
         self.heap.space().c.bind_live_to_mark_bitmap();
         self.heap.swap_stacks();
+        self.current_space_bitmap = Some(self.heap.space().c.mark_bitmap().clone());
         let m = std::time::Instant::now();
         self.marking_phase();
         let mend = m.elapsed();
@@ -111,13 +117,22 @@ impl<'a> StickyMarkAndSweep<'a> {
         self.reclaim_phase();
         let re = rs.elapsed();
         self.heap.space().c.swap_bitmaps();
+
+        if self.heap.space().c.has_bound_bitmaps() {
+            self.heap.space().c.unbind_bitmaps();
+        }
         let c = std::time::Instant::now();
-        self.heap.space().c.mark_bitmap().clear_all();
+        if !Arc::ptr_eq(
+            &self.heap.space().c.live_bitmap(),
+            &self.heap.space().c.mark_bitmap(),
+        ) {
+            self.heap.space().c.mark_bitmap().clear_all();
+        }
         let ce = c.elapsed();
         self.duration = start.elapsed().as_nanos() as u64;
         if self.heap.print_timings {
             println!(
-            "Sticky GC cycle stats: \nFreed {} in {}ns\n\tMarking took {}ns\n\tReclaim took {}ns\n\tBitmap cleared in {}ns",
+            "Sticky GC cycle stats: \n Freed {} in {}ns\n Marking took {}ns\n Reclaim took {}ns\n Bitmap cleared in {}ns",
             formatted_size(self.freed),
             self.duration,
             mend.as_nanos(),
@@ -145,6 +160,10 @@ impl<'a> StickyMarkAndSweep<'a> {
         while let Some(obj) = object {
             if !mark_bitmap.test(Address::from_ptr(obj.ptr)) {
                 self.freed += obj.size();
+                unsafe {
+                    obj.trait_object().finalize();
+                    std::ptr::drop_in_place(obj.trait_object());
+                }
                 self.heap.space().free(Address::from_ptr(obj.ptr));
                 //self.heap.in_heap.clear(Address::from_ptr(object.ptr));
             }
@@ -154,11 +173,20 @@ impl<'a> StickyMarkAndSweep<'a> {
     }
     fn marking_phase(&mut self) {
         // TODO: Marking can be done concurrently after marking roots.
-        //log!("Marking root objects");
-        // self.heap
-        //    .mark_alloc_stack_as_live(self.heap.live_stack(), self.heap.space.c.live_bitmap());
-        //self.heap.card_table.as_ref().unwrap().
         let heap = self.heap;
+        let card_table = heap.card_table.as_ref().unwrap(); // in sticky GC mode we *must* have card table present
+        card_table.modify_cards_atomic(
+            heap.space().c.begin(),
+            heap.space().c.end(),
+            |card| {
+                if card == CARD_DIRTY {
+                    card - 1
+                } else {
+                    0
+                }
+            },
+            |_, _, _| {},
+        );
         heap.rootlist.walk(&mut |root| {
             self.mark_object(root.obj);
         });

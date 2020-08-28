@@ -113,7 +113,7 @@ impl DLMallocSpace {
         for i in 0..ptrs.len() {
             let ptr = ptrs[i];
 
-            //            freed += unsafe { mspace_usable_size(ptr.to_usize()) };
+            freed += unsafe { mspace_usable_size(ptr.to_usize()) };
             //valgrind_freelike!(ptr.to_ptr::<u8>());
         }
         let lock = self.lock.lock();

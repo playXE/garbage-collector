@@ -75,6 +75,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "garbage-collector"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "flume",
+ "libc",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "simple_logger",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -219,19 +232,6 @@ dependencies = [
  "libc",
  "wasi",
  "winapi",
-]
-
-[[package]]
-name = "vm"
-version = "0.1.0"
-dependencies = [
- "cc",
- "flume",
- "libc",
- "log",
- "once_cell",
- "parking_lot",
- "simple_logger",
 ]
 
 [[package]]

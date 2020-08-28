@@ -49,16 +49,12 @@ impl<A: Alignment> SpaceBitMap<A> {
         b * 8 * A::ALIGN
     }
     pub fn clear_all(&self) {
-        unsafe {
-            let mut this = Ref::new(self);
-            for i in this.storage.iter_mut() {
-                unsafe {
-                    *i = 0;
-                }
-            }
-
-            self.mem_map.madvise_dontneed_and_zero();
+        let mut this = Ref::new(self);
+        for i in this.storage.iter_mut() {
+            *i = 0;
         }
+
+        self.mem_map.madvise_dontneed_and_zero();
     }
     pub fn new(heap_begin: Address, heap_cap: usize) -> Self {
         let size = Self::compute_size(heap_cap);

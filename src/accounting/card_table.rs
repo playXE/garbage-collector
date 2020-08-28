@@ -222,7 +222,7 @@ impl CardTable {
             }
             // Now we have the words, we can process words in parallel.
             let mut word_cur = card_cur.to_mut_ptr::<usize>();
-            let mut word_end = card_end.to_mut_ptr::<usize>();
+            let word_end = card_end.to_mut_ptr::<usize>();
 
             union X {
                 expected_word: usize,
@@ -238,7 +238,7 @@ impl CardTable {
                 new_bytes: [u8; core::mem::size_of::<usize>()],
             };
             let mut y = Y { new_word: 0 };
-            let (mut new_word, new_bytes): (Ref<usize>, &mut [u8]) =
+            let (new_word, new_bytes): (Ref<usize>, &mut [u8]) =
                 (Ref::new(&mut y.new_word), &mut y.new_bytes);
 
             while word_cur < word_end {

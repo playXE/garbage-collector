@@ -32,7 +32,7 @@ pub struct GCHeader {
 
 impl<T: GcObj> Ref<GcBox<T>> {
     pub fn size(self) -> usize {
-        std::mem::size_of_val(self.trait_object())
+        std::mem::size_of_val(self.trait_object()) + std::mem::size_of::<GCHeader>()
     }
     pub fn trait_object<'a>(self) -> &'a mut dyn GcObj {
         unsafe {
@@ -196,13 +196,44 @@ impl<'a> Heap<'a> {
 
             rootlist: RootList::new(),
         });
-        this.gc = Box::new(collectors::mark_sweep::MarkAndSweep {
-            heap: Ref::new(&*this).cast(),
-            mark_stack: ObjectStack::new(),
-            dur: 0,
-            freed: 0,
-            current_space_bitmap: None,
-        });
+        if use_gen_gc == false {
+            this.gc = Box::new(collectors::mark_sweep::MarkAndSweep {
+                heap: Ref::new(&*this).cast(),
+                mark_stack: ObjectStack::new(),
+                dur: 0,
+                freed: 0,
+                null_marks: 0,
+                current_space_bitmap: None,
+                marked: 0,
+            });
+        } else {
+            this.gc = Box::new(collectors::sticky_mark_sweep::StickyHeap {
+                last_dur: 0,
+                last_freed: 0,
+                total_freed_ms: AtomicUsize::new(0),
+                total_ms_time: AtomicU64::new(0),
+                total_freed_sticky: AtomicUsize::new(0),
+                total_sticky_time: AtomicU64::new(0),
+                ms: Box::new(collectors::mark_sweep::MarkAndSweep {
+                    heap: Ref::new(&*this).cast(),
+                    mark_stack: ObjectStack::new(),
+                    dur: 0,
+                    marked: 0,
+                    null_marks: 0,
+                    freed: 0,
+                    current_space_bitmap: None,
+                }),
+                sticky: Box::new(collectors::sticky_mark_sweep::StickyMarkAndSweep {
+                    heap: Ref::new(&*this).cast(),
+                    mark_stack: ObjectStack::new(),
+                    duration: 0,
+                    freed: 0,
+                    current_space_bitmap: None,
+                }),
+                next_sticky: AtomicBool::new(true),
+                ms_iters: AtomicUsize::new(0),
+            });
+        }
         let space = spaces::dlmalloc_space::DLMallocSpace::create(
             &mut this,
             "alloc space",
@@ -212,7 +243,14 @@ impl<'a> Heap<'a> {
             false,
         );
 
+        if use_gen_gc {
+            this.card_table = Some(accounting::card_table::CardTable::new(
+                space.c.begin(),
+                space.c.limit().to_usize() - space.c.begin().to_usize(),
+            ));
+        }
         this.space = Some(space);
+
         this
     }
     /// This function allows to allocate dynamic memory for arrays or other dynamically sized objects

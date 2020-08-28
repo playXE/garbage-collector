@@ -15,7 +15,7 @@ log = { version = "0.4", optional = true }
 once_cell = "1.4"
 [features]
 concurrent = ["parking_lot", "flume", "incremental"]
-default = ["incremental", "logging"]
+default = ["rt-checks"]
 incremental = []
 # Enable runtime checks for non-concurrent mutexes and rwlocks
 rt-checks = []

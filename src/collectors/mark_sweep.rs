@@ -11,10 +11,14 @@ pub struct MarkAndSweep<'a> {
     pub mark_stack: ObjectStack,
     pub freed: usize,
     pub dur: u64,
+    pub marked: u32,
+    pub null_marks: u32,
 }
 
 impl<'a> MarkAndSweep<'a> {
     pub fn run(&mut self) {
+        self.null_marks = 0;
+        self.marked = 0;
         self.current_space_bitmap = Some(self.heap.space().c.mark_bitmap().clone());
         //let tasks = pause.get_tasks();
         let start = std::time::Instant::now();
@@ -29,7 +33,9 @@ impl<'a> MarkAndSweep<'a> {
         self.dur = start.elapsed().as_nanos() as u64;
         if self.heap.print_timings {
             println!(
-                "GC cycle stats:\n Freed {} in {}ns\n Marking took {}ns\n Reclaim took {}ns",
+                "GC cycle stats:\nMarked: \n null={}\n objects={}\nTimings: \n Freed {} in {}ns\n Marking took {}ns\n Reclaim took {}ns",
+                self.null_marks,
+                self.marked,
                 formatted_size(self.freed),
                 self.dur,
                 mend.as_nanos(),
@@ -118,10 +124,17 @@ impl<'a> MarkAndSweep<'a> {
             },
         );
         self.heap.space().c.swap_bitmaps();
-        self.heap.space().c.mark_bitmap().clear_all();
+
         if self.heap.space().c.has_bound_bitmaps() {
             self.heap.space().c.unbind_bitmaps();
         }
+        if !Arc::ptr_eq(
+            &self.heap.space().c.live_bitmap(),
+            &self.heap.space().c.mark_bitmap(),
+        ) {
+            self.heap.space().c.mark_bitmap().clear_all();
+        }
+
         //drop(writer);
     }
     fn process_mark_stack(&mut self) {
@@ -151,6 +164,8 @@ impl<'a> MarkAndSweep<'a> {
     fn mark_object(&mut self, obj: Ref<GcBox<()>>) {
         if obj.is_non_null() {
             self.mark_object_non_null(obj, Ref::null());
+        } else {
+            self.null_marks += 1;
         }
     }
     fn mark_object_non_null(&mut self, obj: Ref<GcBox<()>>, _holder: Ref<GcBox<()>>) {
@@ -160,6 +175,7 @@ impl<'a> MarkAndSweep<'a> {
             .unwrap()
             .has_addr(Address::from_ptr(obj.ptr))
         {
+            self.marked += 1;
             if !self
                 .current_space_bitmap
                 .as_ref()
