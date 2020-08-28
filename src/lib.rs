@@ -442,7 +442,7 @@ impl<T: GcObj> Handle<T> {
 }
 
 impl<'a, T: GcObj> Root<'a, T> {
-    pub fn to_heap(self) -> Handle<T> {
+    pub fn to_heap(&self) -> Handle<T> {
         Handle {
             ptr: unsafe {
                 std::ptr::NonNull::new_unchecked(self.inner.obj.cast::<GcBox<T>>().ptr as *mut _)
@@ -681,4 +681,43 @@ pub trait GcObj: Finalize + Mark {}
 
 fn gcvtbl_of(x: &dyn GcObj) -> *mut () {
     unsafe { std::mem::transmute::<_, TraitObject>(x).vtable }
+}
+
+use std::hash::{Hash, Hasher};
+
+impl<T: Hash + GcObj> Hash for Handle<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
+    }
+}
+
+impl<T: PartialEq + GcObj> PartialEq for Handle<T> {
+    fn eq(&self, other: &Self) -> bool {
+        (**self).eq(&**other)
+    }
+}
+
+impl<T: Eq + GcObj> Eq for Handle<T> {}
+impl<T: PartialOrd + GcObj> PartialOrd for Handle<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+}
+impl<T: Ord + GcObj> Ord for Handle<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
+use std::fmt::{self, Formatter};
+
+impl<T: fmt::Display + GcObj> fmt::Display for Handle<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", **self)
+    }
+}
+impl<T: fmt::Debug + GcObj> fmt::Debug for Handle<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", **self)
+    }
 }
