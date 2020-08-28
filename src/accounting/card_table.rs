@@ -1,6 +1,6 @@
 use super::space_bitmap::*;
 use crate::{mem_map::*, utils::*, *};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 pub const CARD_SHIFT: usize = 10;
 pub const CARD_SIZE: usize = 1 << CARD_SHIFT;
 pub const CARD_CLEAN: u8 = 0x0;
@@ -177,7 +177,108 @@ impl CardTable {
             self.clear_card_range(scan_begin, scan_end);
         }
     }
+    pub fn modify_cards_atomic(
+        &self,
+        scan_begin: Address,
+        scan_end: Address,
+        mut visitor: impl FnMut(u8) -> u8,
+        mut modified: impl FnMut(Address, u8, u8),
+    ) {
+        let mut card_cur = self.card_from_addr(scan_begin);
+        let mut card_end = self.card_from_addr(scan_end.align_to(CARD_SIZE));
+        unsafe {
+            while !is_aligned(card_cur.to_usize(), core::mem::size_of::<usize>())
+                && card_cur < card_end
+            {
+                let mut expected;
+                let mut new_value;
+                while {
+                    expected = card_cur.to_ptr::<u8>().read();
+                    new_value = visitor(expected);
+                    expected != new_value
+                        && !byte_cas(expected, new_value, &*card_cur.to_ptr::<u8>())
+                } {}
+                if expected != new_value {
+                    modified(card_cur, expected, new_value);
+                }
+                card_cur = card_cur.offset(1);
+            }
+            // handle unaligned cards
+            while !is_aligned(card_end.to_usize(), core::mem::size_of::<usize>())
+                && card_end > card_cur
+            {
+                card_end = card_end.sub(1);
+                let mut expected;
+                let mut new_value;
+                while {
+                    expected = card_cur.to_ptr::<u8>().read();
+                    new_value = visitor(expected);
+                    expected != new_value
+                        && !byte_cas(expected, new_value, &*card_end.to_ptr::<u8>())
+                } {}
+                if expected != new_value {
+                    modified(card_end, expected, new_value);
+                }
+            }
+            // Now we have the words, we can process words in parallel.
+            let mut word_cur = card_cur.to_mut_ptr::<usize>();
+            let mut word_end = card_end.to_mut_ptr::<usize>();
 
+            union X {
+                expected_word: usize,
+                expected_bytes: [u8; core::mem::size_of::<usize>()],
+            }
+
+            let mut x = X { expected_word: 0 };
+            let (mut expected_word, expected_bytes): (Ref<usize>, &mut [u8]) =
+                (Ref::new(&mut x.expected_word), &mut x.expected_bytes);
+
+            union Y {
+                new_word: usize,
+                new_bytes: [u8; core::mem::size_of::<usize>()],
+            };
+            let mut y = Y { new_word: 0 };
+            let (mut new_word, new_bytes): (Ref<usize>, &mut [u8]) =
+                (Ref::new(&mut y.new_word), &mut y.new_bytes);
+
+            while word_cur < word_end {
+                loop {
+                    *expected_word = *word_cur;
+                    if *expected_word == 0 {
+                        break;
+                    }
+                    for i in 0..core::mem::size_of::<usize>() {
+                        new_bytes[i] = visitor(expected_bytes[i]);
+                    }
+
+                    let atomic_word: *mut AtomicUsize = std::mem::transmute(word_cur);
+                    if (&*atomic_word)
+                        .compare_exchange_weak(
+                            *expected_word as _,
+                            *new_word as _,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        for i in 0..core::mem::size_of::<usize>() {
+                            let expected_byte = expected_bytes[i];
+                            let new_byte = new_bytes[i];
+                            if expected_byte != new_byte {
+                                modified(
+                                    Address::from_ptr(word_cur.cast::<u8>().offset(i as _)),
+                                    expected_byte,
+                                    new_byte,
+                                );
+                            }
+                        }
+                        break;
+                    }
+                }
+                word_cur = word_cur.offset(1);
+            }
+        }
+    }
     pub fn mark_card(&self, addr: Address) {
         unsafe {
             *self.card_from_addr(addr).to_mut_ptr::<u8>() = CARD_DIRTY;

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(unused_variables)]
 #[macro_use]
 pub mod utils;
 pub(crate) mod accounting;
@@ -52,11 +53,7 @@ pub struct Heap<'a> {
     mutator_running: AtomicBool,
 
     mutator_should_stop: AtomicBool,
-    total_freed_ms: AtomicUsize,
-    total_freed_sticky: AtomicUsize,
-    total_ms_time: AtomicU64,
-    total_sticky_time: AtomicU64,
-    ms_iters: AtomicUsize,
+
     allocated: AtomicUsize,
     threshold: AtomicUsize,
     rootlist: RootList<'a>,
@@ -191,15 +188,12 @@ impl<'a> Heap<'a> {
             space: None,
             print_timings,
             alloc_stack: [ObjectStack::new(), ObjectStack::new()],
-            total_freed_ms: AtomicUsize::new(0),
-            total_freed_sticky: AtomicUsize::new(0),
-            total_ms_time: AtomicU64::new(0),
-            total_sticky_time: AtomicU64::new(0),
+
             allocated: AtomicUsize::new(0),
             threshold: AtomicUsize::new(threshold),
             card_table: None,
             gc: Box::new(collectors::DummyGc {}),
-            ms_iters: AtomicUsize::new(0),
+
             rootlist: RootList::new(),
         });
         this.gc = Box::new(collectors::mark_sweep::MarkAndSweep {

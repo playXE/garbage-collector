@@ -26,7 +26,6 @@ fn main() {
 
     let mut val = heap.allocate(Foo { next: None });
     val.next = Some(heap.allocate(Foo { next: None }).to_heap());
-
-    heap.gc();
     drop(val);
+    heap.gc();
 }

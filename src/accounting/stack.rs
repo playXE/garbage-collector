@@ -25,7 +25,9 @@ pub mod __stack {
                 panic!("Stack::push failed");
             }
         }
-
+        pub fn clear(&self) {
+            self.recv.clear();
+        }
         pub fn drain(&self) -> flume::Drain<'_, T> {
             self.recv.drain()
         }
@@ -125,7 +127,9 @@ mod __stack {
                 *head = val;
             }
         }
-
+        pub fn clear(&self) {
+            *self.head() = Ref::null();
+        }
         pub fn pop(&self) -> Option<Ref<GcBox<()>>> {
             let mut head = self.head();
             if head.is_non_null() {

@@ -39,6 +39,9 @@ impl<'a> MarkAndSweep<'a> {
         //drop(pause);
     }
     fn marking_phase(&mut self) {
+        if let Some(card_table) = &self.heap.card_table {
+            card_table.clear_card_range(self.heap.space().c.begin(), self.heap.space().c.end());
+        }
         #[cfg(feature = "logging")]
         {
             log::info!("Marking root objects...");
