@@ -132,6 +132,7 @@ impl<'a> RootList<'a> {
         }
     }
 }
+
 impl<'a, T: GcObj> Clone for Root<'a, T> {
     fn clone(&self) -> Self {
         let lock = self.inner.list.lock.lock();
@@ -349,7 +350,7 @@ impl<'a> Heap<'a> {
 
     pub fn gc(&mut self) {
         self.gc.run_phases();
-        self.space().trim();
+        //self.space().trim();
         let prev = self.threshold.load(Ordering::Relaxed);
         if self.allocated.load(Ordering::Relaxed) >= self.threshold.load(Ordering::Relaxed) {
             self.threshold.store(
@@ -357,14 +358,16 @@ impl<'a> Heap<'a> {
                 Ordering::Relaxed,
             );
         }
-        if prev == self.threshold.load(Ordering::Relaxed) {
-            println!(" GC threshold unchanged from {}", formatted_size(prev));
-        } else {
-            println!(
-                " GC threshold changed from {} to {}",
-                formatted_size(prev),
-                formatted_size(self.threshold.load(Ordering::Relaxed))
-            );
+        if self.print_timings {
+            if prev == self.threshold.load(Ordering::Relaxed) {
+                println!(" GC threshold unchanged from {}", formatted_size(prev));
+            } else {
+                println!(
+                    " GC threshold changed from {} to {}",
+                    formatted_size(prev),
+                    formatted_size(self.threshold.load(Ordering::Relaxed))
+                );
+            }
         }
     }
 
@@ -450,7 +453,11 @@ impl<'a, T: GcObj> Root<'a, T> {
         }
     }
 }
-
+impl<T: GcObj + 'static> Root<'static, T> {
+    pub fn new(val: T) -> Self {
+        allocate(val)
+    }
+}
 impl<T: GcObj> std::ops::Deref for Handle<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {

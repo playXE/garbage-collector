@@ -23,3 +23,10 @@ logging = ["log"]
 
 [build-dependencies]
 cc = "1"
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "gcbench"
+harness = false

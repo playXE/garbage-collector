@@ -673,7 +673,7 @@ void *memset(void *s, int c, size_t n);
 #define MALLOC_ALIGNMENT ((size_t)(2 * sizeof(void *)))
 #endif  /* MALLOC_ALIGNMENT */
 #ifndef FOOTERS
-#define FOOTERS 0
+#define FOOTERS 1
 #endif  /* FOOTERS */
 #ifndef ABORT
 #define ABORT  abort()

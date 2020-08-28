@@ -46,7 +46,6 @@ pub fn num_iters(i: i32) -> i32 {
 
 pub fn populate(depth: i32, mut this_node: &mut Node) {
     let mut depth = depth;
-    println!("{}", depth);
     if depth <= 0 {
         return;
     } else {
@@ -79,6 +78,7 @@ pub fn make_tree(idepth: i32) -> Root<'static, Node> {
 }
 
 const DEPTH: i32 = 6;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 pub fn top_down_construction(depth: i32) {
     let mut inum_iters = num_iters(depth);
@@ -91,7 +91,23 @@ pub fn top_down_construction(depth: i32) {
     }
 }
 
-fn main() {
-    STRETCH_TREE_DEPTH.store(7, Ordering::Relaxed);
-    top_down_construction(6);
+pub fn bottom_up_construction(depth: i32) {
+    let mut inum_iters = num_iters(depth);
+
+    let mut i = 0;
+
+    for i in 0..inum_iters {
+        let mut temp_tree = make_tree(depth);
+    }
 }
+
+fn bench_top_down(c: &mut Criterion) {
+    initialize_heap(HeapConfig::new().print_timings(false));
+    STRETCH_TREE_DEPTH.store(7, Ordering::Relaxed);
+    LONG_LIVED_TREE_DEPTH.store(6, Ordering::Relaxed);
+    c.bench_function("top down 6", |b| b.iter(|| top_down_construction(6)));
+    c.bench_function("bottom_up 6", |b| b.iter(|| bottom_up_construction(6)));
+}
+
+criterion_group!(benches, bench_top_down);
+criterion_main!(benches);
