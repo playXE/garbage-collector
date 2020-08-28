@@ -1,97 +1,50 @@
 use garbage_collector::*;
 
-pub struct Node {
-    i: i32,
-    j: i32,
-    left: Option<Handle<Self>>,
-    right: Option<Handle<Self>>,
+struct Foo {
+    val: Handle<XX>,
 }
 
-impl GcObj for Node {}
-impl Finalize for Node {}
-impl Mark for Node {
-    fn mark(&self, visit: &mut dyn FnMut(*const GcBox<()>)) {
-        if let Some(left) = self.left {
-            left.mark(visit);
-        }
-        if let Some(right) = self.right {
-            right.mark(visit);
-        }
+impl GcObj for Foo {}
+impl Finalize for Foo {}
+impl Mark for Foo {
+    fn mark(&self, _visit: &mut dyn FnMut(*const GcBox<()>)) {
+        self.val.mark(_visit);
+        println!("mm {:p}",self.val.gc_ptr());
     }
 }
 
-impl Node {
-    pub fn leaf() -> Self {
-        Self {
-            i: 0,
-            j: 0,
-            left: None,
-            right: None,
-        }
+struct XX(i32);
+
+impl GcObj for XX {}
+impl Mark for XX {
+    fn mark(&self, _visit: &mut dyn FnMut(*const GcBox<()>)) {
+        println!("mark {}",self.0);
     }
 }
 
-use std::sync::atomic::{AtomicI32, Ordering};
-
-static STRETCH_TREE_DEPTH: AtomicI32 = AtomicI32::new(0);
-static LONG_LIVED_TREE_DEPTH: AtomicI32 = AtomicI32::new(0);
-
-pub const fn tree_size(i: i32) -> i32 {
-    (1 << (i + 1) - 1)
-}
-
-pub fn num_iters(i: i32) -> i32 {
-    4 * tree_size(STRETCH_TREE_DEPTH.load(Ordering::Relaxed)) / tree_size(i)
-}
-
-pub fn populate(depth: i32, mut this_node: &mut Node) {
-    let mut depth = depth;
-    println!("{}", depth);
-    if depth <= 0 {
-        return;
-    } else {
-        depth = depth - 1;
-        let mut left = Root::new(Node::leaf());
-        let mut right = Root::new(Node::leaf());
-        this_node.left = Some(left.to_heap());
-        this_node.right = Some(right.to_heap());
-        populate(depth, &mut *left);
-        populate(depth, &mut *right);
-        drop(left);
-        drop(right);
-    }
-}
-
-pub fn make_tree(idepth: i32) -> Root<'static, Node> {
-    if idepth <= 0 {
-        allocate(Node::leaf())
-    } else {
-        let mut node = allocate(Node {
-            i: 0,
-            j: 0,
-            left: None,
-            right: None,
-        });
-        node.left = Some(make_tree(idepth - 1).to_heap());
-        node.right = Some(make_tree(idepth - 1).to_heap());
-        node
-    }
-}
-
-const DEPTH: i32 = 6;
-
-pub fn top_down_construction(depth: i32) {
-    let mut inum_iters = num_iters(depth);
-
-    let mut i = 0;
-
-    for i in 0..inum_iters {
-        let mut temp_tree = Root::new(Node::leaf());
-        populate(depth, &mut temp_tree);
+impl Finalize for XX {
+    fn finalize(&mut self) {
+        println!("dead {}",self.0);
     }
 }
 
 fn main() {
-    STRETCH_TREE_DEPTH.store(7, Ordering::Relaxed);
-    top_down_construction(6);
+    initialize_heap(HeapConfig::new().generational(true).print_timings(true));
+    let val = Root::new(XX(42));
+    let val2 = Root::new(XX(43));
+    let mut val3 = Root::new(Foo {
+        val: val.to_heap()
+    });
+    //drop(val2);
+    drop(val);
+    collect_garbage();
+    collect_garbage();
+    let _vv = Root::new(XX(45));
+    let handle = _vv.to_heap();
+
+    drop(_vv);
+    write_barrier(val3.to_heap(), handle);
+    val3.val = handle;
+    collect_garbage();
+    println!("{}",val3.val.0);
 }

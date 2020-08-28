@@ -100,13 +100,156 @@ pub fn bottom_up_construction(depth: i32) {
         let mut temp_tree = make_tree(depth);
     }
 }
-
+use criterion::BenchmarkId;
 fn bench_top_down(c: &mut Criterion) {
     initialize_heap(HeapConfig::new().print_timings(false));
     STRETCH_TREE_DEPTH.store(7, Ordering::Relaxed);
     LONG_LIVED_TREE_DEPTH.store(6, Ordering::Relaxed);
-    c.bench_function("top down 6", |b| b.iter(|| top_down_construction(6)));
-    c.bench_function("bottom_up 6", |b| b.iter(|| bottom_up_construction(6)));
+    let mut group = c.benchmark_group("binary tree");
+    for i in 6..8 {
+        group.bench_with_input(BenchmarkId::new(&format!("gc btree top down depth={}",i),i), &i, |b,i| {
+            b.iter(|| {
+                top_down_construction(*i)
+            });
+        });
+        group.bench_with_input(BenchmarkId::new(&format!("gc btree bottom up depth={}",i),i), &i, |b,i| {
+            b.iter(|| {
+                bottom_up_construction(*i);
+            });
+        });
+        group.bench_with_input(BenchmarkId::new(&format!("rc btree top down depth={}",i),i), &i, |b,i| {
+            b.iter(|| {
+                rctop_down_construction(*i)
+            });
+        });
+        group.bench_with_input(BenchmarkId::new(&format!("rc btree bottom up depth={}",i),i), &i, |b,i| {
+            b.iter(|| {
+                rcbottom_up_construction(*i);
+            });
+        });
+        //group.bench_function("top down 6", |b| b.iter(|| top_down_construction(6)));
+        //c.bench_function("bottom_up 6", |b| b.iter(|| bottom_up_construction(6)));
+    }
+    group.finish();
+}
+
+struct Inner<T> {
+    rc: u32,
+    val: T,
+}
+
+pub struct Rc<T> {
+    inner: *mut Inner<T>,
+}
+
+impl<T> Rc<T> {
+    pub fn new(val: T) -> Self {
+        Self {
+            inner: Box::into_raw(Box::new(Inner { val, rc: 1 })),
+        }
+    }
+}
+
+impl<T> Clone for Rc<T> {
+    fn clone(&self) -> Self {
+        unsafe {
+            let inner = &mut *self.inner;
+            inner.rc += 1;
+            Self { inner: self.inner }
+        }
+    }
+}
+
+impl<T> Drop for Rc<T> {
+    fn drop(&mut self) {
+        unsafe {
+            let inner = &mut *self.inner;
+            if inner.rc == 1 {
+                let _ = Box::from_raw(self.inner);
+            } else {
+                inner.rc -= 1;
+            }
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Rc<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &(&*self.inner).val }
+    }
+}
+
+impl<T> std::ops::DerefMut for Rc<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut (&mut *self.inner).val }
+    }
+}
+
+pub struct RCNode {
+    left: Option<Rc<Self>>,
+    right: Option<Rc<Self>>,
+}
+
+impl RCNode {
+    pub fn leaf() -> Self {
+        Self {
+            left: None,
+            right: None,
+        }
+    }
+}
+
+pub fn rcpopulate(depth: i32, mut this_node: &mut RCNode) {
+    let mut depth = depth;
+    if depth <= 0 {
+        return;
+    } else {
+        depth = depth - 1;
+        let mut left = Rc::new(RCNode::leaf());
+        let mut right = Rc::new(RCNode::leaf());
+        this_node.left = Some(left.clone());
+        this_node.right = Some(right.clone());
+        rcpopulate(depth, &mut *left);
+        rcpopulate(depth, &mut *right);
+        drop(left);
+        drop(right);
+    }
+}
+
+pub fn rcmake_tree(idepth: i32) -> Rc<RCNode> {
+    if idepth <= 0 {
+        Rc::new(RCNode::leaf())
+    } else {
+        let mut node = Rc::new(RCNode {
+            left: None,
+            right: None,
+        });
+        node.left = Some(rcmake_tree(idepth - 1));
+        node.right = Some(rcmake_tree(idepth - 1));
+        node
+    }
+}
+
+pub fn rctop_down_construction(depth: i32) {
+    let mut inum_iters = num_iters(depth);
+
+    let mut i = 0;
+
+    for i in 0..inum_iters {
+        let mut temp_tree = Rc::new(Node::leaf());
+        populate(depth, &mut temp_tree);
+    }
+}
+
+pub fn rcbottom_up_construction(depth: i32) {
+    let mut inum_iters = num_iters(depth);
+
+    let mut i = 0;
+
+    for i in 0..inum_iters {
+        let mut temp_tree = rcmake_tree(depth);
+    }
 }
 
 criterion_group!(benches, bench_top_down);

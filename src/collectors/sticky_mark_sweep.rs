@@ -41,6 +41,8 @@ impl<'a, 'b: 'a> super::GarbageCollector<'a> for StickyHeap<'b> {
             self.ms_iters.fetch_add(1, Ordering::Relaxed);
             (self.ms.freed, self.ms.dur)
         } else {
+            self.sticky.freed = 0;
+            self.sticky.duration = 0;
             self.sticky.run_phases();
             (self.sticky.freed, self.sticky.duration)
         };
@@ -90,6 +92,10 @@ impl<'a, 'b: 'a> super::GarbageCollector<'a> for StickyHeap<'b> {
     fn mark_stack(&self) -> &crate::accounting::stack::ObjectStack {
         &self.ms.mark_stack
     }
+
+    fn write_barrier(&self, field: Ref<GcBox<()>>, holder: Ref<GcBox<()>>) {
+        self.ms.heap.card_table.as_ref().unwrap().mark_card(Address::from_ptr(holder.ptr));
+    }
 }
 
 pub struct StickyMarkAndSweep<'a> {
@@ -98,6 +104,8 @@ pub struct StickyMarkAndSweep<'a> {
     pub mark_stack: ObjectStack,
     pub freed: usize,
     pub duration: u64,
+    pub marked: u32,
+    pub null_marks: u32
 }
 
 impl<'a> StickyMarkAndSweep<'a> {
@@ -132,13 +140,14 @@ impl<'a> StickyMarkAndSweep<'a> {
         self.duration = start.elapsed().as_nanos() as u64;
         if self.heap.print_timings {
             println!(
-            "Sticky GC cycle stats: \n Freed {} in {}ns\n Marking took {}ns\n Reclaim took {}ns\n Bitmap cleared in {}ns",
-            formatted_size(self.freed),
-            self.duration,
-            mend.as_nanos(),
-            re.as_nanos(),
-            ce.as_nanos(),
-        );
+                "Sticky GC cycle stats:\nMarked: \n null={}\n objects={}\nTimings: \n Freed {} in {}ns\n Marking took {}ns\n Reclaim took {}ns",
+                self.null_marks,
+                self.marked,
+                formatted_size(self.freed),
+                self.duration,
+                mend.as_nanos(),
+                re.as_nanos(),
+            );
         }
     }
 
@@ -156,8 +165,9 @@ impl<'a> StickyMarkAndSweep<'a> {
             core::mem::swap(&mut live_bitmap, &mut mark_bitmap);
         }
 
-        let mut object = live.pop();
-        while let Some(obj) = object {
+        
+        for obj in live.drain() {
+            
             if !mark_bitmap.test(Address::from_ptr(obj.ptr)) {
                 self.freed += obj.size();
                 unsafe {
@@ -167,7 +177,7 @@ impl<'a> StickyMarkAndSweep<'a> {
                 self.heap.space().free(Address::from_ptr(obj.ptr));
                 //self.heap.in_heap.clear(Address::from_ptr(object.ptr));
             }
-            object = live.pop();
+           
         }
         self.heap.allocated.fetch_sub(self.freed, Ordering::Relaxed);
     }
@@ -239,6 +249,8 @@ impl<'a> StickyMarkAndSweep<'a> {
     fn mark_object(&mut self, obj: Ref<GcBox<()>>) {
         if obj.is_non_null() {
             self.mark_object_non_null(obj, Ref::null());
+        } else {
+            self.null_marks += 1;
         }
     }
     fn mark_object_non_null(&mut self, obj: Ref<GcBox<()>>, _holder: Ref<GcBox<()>>) {
@@ -248,6 +260,7 @@ impl<'a> StickyMarkAndSweep<'a> {
             .unwrap()
             .has_addr(Address::from_ptr(obj.ptr))
         {
+            self.marked += 1;
             if !self
                 .current_space_bitmap
                 .as_ref()

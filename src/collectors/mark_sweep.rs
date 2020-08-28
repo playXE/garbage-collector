@@ -152,8 +152,9 @@ impl<'a> MarkAndSweep<'a> {
                             self.mark_object_non_null(Ref::new(ptr), obj);
                         }
                     });
-                }
+                }in
             }*/
+            println!("vt {:p}",obj.header.vtable);
             obj.trait_object().mark(&mut |ptr| {
                 if ptr.is_null() == false {
                     self.mark_object_non_null(Ref::new(ptr), obj);

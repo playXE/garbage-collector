@@ -96,8 +96,9 @@ mod __stack {
         type Item = Ref<GcBox<()>>;
         fn next(&mut self) -> Option<Self::Item> {
             if self.data.is_non_null() {
-                let prev = self.data;
+                let mut prev = self.data;
                 self.data = prev.header.next;
+                prev.header.next = Ref::null();
                 return Some(prev);
             } else {
                 None
@@ -134,8 +135,9 @@ mod __stack {
         pub fn pop(&self) -> Option<Ref<GcBox<()>>> {
             let mut head = self.head();
             if head.is_non_null() {
-                let prev = *head;
+                let mut prev = *head;
                 *head = prev.header.next;
+                prev.header.next = Ref::null();
                 Some(prev)
             } else {
                 None

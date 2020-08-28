@@ -227,6 +227,8 @@ impl<'a> Heap<'a> {
                 sticky: Box::new(collectors::sticky_mark_sweep::StickyMarkAndSweep {
                     heap: Ref::new(&*this).cast(),
                     mark_stack: ObjectStack::new(),
+                    marked: 0,
+                    null_marks: 0,
                     duration: 0,
                     freed: 0,
                     current_space_bitmap: None,
@@ -347,7 +349,10 @@ impl<'a> Heap<'a> {
             panic!("Out of memory");
         }
     }
-
+    pub fn write_barrier<T: GcObj,U: GcObj>(&self,dst: Handle<T>,new_value: Handle<U>) 
+    {
+        self.gc.write_barrier(Ref::new(new_value.gc_ptr()),Ref::new(dst.gc_ptr()));
+    }
     pub fn gc(&mut self) {
         self.gc.run_phases();
         //self.space().trim();
@@ -583,6 +588,22 @@ pub fn root<T: GcObj + 'static>(value: Handle<T>) -> Root<'static, T> {
 
         heap.rootlist.root(Ref::new(value.ptr.as_ptr()))
     })
+}
+
+pub fn collect_garbage() {
+    HEAP.with(|x| {
+        let mut heap = x
+            .get_or_init(|| Mutex::new(Heap::new(4 * 1024 * 1024, false, false, 16 * 1024)))
+            .lock();
+
+        heap.gc();
+    })
+}
+
+pub fn write_barrier<T: GcObj,U: GcObj>(holder: Handle<T>,new_value: Handle<U>) {
+    HEAP.with(|x| {
+        x.get().unwrap().lock().write_barrier(holder,new_value);
+    });
 }
 
 use locks::Mutex;
