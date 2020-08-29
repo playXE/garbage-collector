@@ -177,6 +177,9 @@ impl RememberedSet {
                 if unsafe { !(&**value).header.is_marked() } {
                     // Pointers that are not marked should no longer be
                     // remembered.
+                    unsafe {
+                        assert!((&**value).header.is_old());
+                    }
                     continue;
                 }
 

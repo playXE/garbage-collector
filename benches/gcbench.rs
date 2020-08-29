@@ -42,7 +42,7 @@ pub fn num_iters(i: i32) -> i32 {
     4 * tree_size(STRETCH_TREE_DEPTH.load(Ordering::Relaxed)) / tree_size(i)
 }
 
-pub fn populate(depth: i32, mut this_node: &mut Node) {
+pub fn populate(depth: i32, mut this_node: Handle<Node>) {
     let local = local_allocator();
     let mut depth = depth;
     if depth <= 0 {
@@ -51,10 +51,12 @@ pub fn populate(depth: i32, mut this_node: &mut Node) {
         depth = depth - 1;
         let mut left = local.allocate(Node::leaf());
         let mut right = local.allocate(Node::leaf());
+        local.write_barrier(this_node, left.to_heap());
         this_node.left = Some(left.to_heap());
+        local.write_barrier(this_node, right.to_heap());
         this_node.right = Some(right.to_heap());
-        populate(depth, &mut *left);
-        populate(depth, &mut *right);
+        populate(depth, left.to_heap());
+        populate(depth, right.to_heap());
         drop(left);
         drop(right);
     }
@@ -71,31 +73,32 @@ pub fn make_tree(idepth: i32) -> Root<Node> {
             left: None,
             right: None,
         });
-        node.left = Some(make_tree(idepth - 1).to_heap());
-        node.right = Some(make_tree(idepth - 1).to_heap());
+
+        let left = make_tree(idepth - 1);
+        local.write_barrier(node.to_heap(), left.to_heap());
+        node.left = Some(left.to_heap());
+        let right = make_tree(idepth - 1);
+        local.write_barrier(node.to_heap(), right.to_heap());
+        node.right = Some(right.to_heap());
         node
     }
 }
 
 const DEPTH: i32 = 6;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 pub fn top_down_construction(depth: i32) {
-    let start = std::time::Instant::now();
-
     let mut inum_iters = num_iters(depth);
 
     let mut i = 0;
     let local = local_allocator();
     for i in 0..inum_iters {
         let mut temp_tree = local.allocate(Node::leaf());
-        populate(depth, &mut temp_tree);
+        populate(depth, temp_tree.to_heap());
     }
-
-    println!("GC top down took {}us", start.elapsed().as_micros());
 }
 
 pub fn bottom_up_construction(depth: i32) {
-    let start = std::time::Instant::now();
     let mut inum_iters = num_iters(depth);
 
     let mut i = 0;
@@ -103,8 +106,57 @@ pub fn bottom_up_construction(depth: i32) {
     for i in 0..inum_iters {
         let mut temp_tree = make_tree(depth);
     }
-    println!("GC bottom up took {}us", start.elapsed().as_micros());
 }
+use criterion::BenchmarkId;
+fn bench_top_down(c: &mut Criterion) {
+    let lc = local_allocator();
+    STRETCH_TREE_DEPTH.store(7, Ordering::Relaxed);
+    LONG_LIVED_TREE_DEPTH.store(6, Ordering::Relaxed);
+    let mut group = c.benchmark_group("binary tree");
+    for i in 6..8 {
+        group.bench_with_input(
+            BenchmarkId::new(&format!("gc btree top down depth={}", i), i),
+            &i,
+            |b, i| {
+                local_allocator();
+                b.iter(|| top_down_construction(*i));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(&format!("gc btree bottom up depth={}", i), i),
+            &i,
+            |b, i| {
+                b.iter(|| {
+                    local_allocator();
+                    bottom_up_construction(*i);
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(&format!("rc btree top down depth={}", i), i),
+            &i,
+            |b, i| {
+                local_allocator();
+                b.iter(|| rctop_down_construction(*i));
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new(&format!("rc btree bottom up depth={}", i), i),
+            &i,
+            |b, i| {
+                b.iter(|| {
+                    local_allocator();
+                    rcbottom_up_construction(*i);
+                });
+            },
+        );
+        //group.bench_function("top down 6", |b| b.iter(|| top_down_construction(6)));
+        //c.bench_function("bottom_up 6", |b| b.iter(|| bottom_up_construction(6)));
+    }
+    group.finish();
+    //detach_local_allocator(lc);
+}
+
 struct Inner<T> {
     rc: u32,
     val: T,
@@ -204,20 +256,17 @@ pub fn rcmake_tree(idepth: i32) -> Rc<RCNode> {
 }
 
 pub fn rctop_down_construction(depth: i32) {
-    let start = std::time::Instant::now();
     let mut inum_iters = num_iters(depth);
 
     let mut i = 0;
 
     for i in 0..inum_iters {
-        let mut temp_tree = Rc::new(Node::leaf());
-        populate(depth, &mut temp_tree);
+        let mut temp_tree = Rc::new(RCNode::leaf());
+        rcpopulate(depth, &mut temp_tree);
     }
-    println!("RC top down took {}us", start.elapsed().as_micros());
 }
 
 pub fn rcbottom_up_construction(depth: i32) {
-    let start = std::time::Instant::now();
     let mut inum_iters = num_iters(depth);
 
     let mut i = 0;
@@ -225,16 +274,7 @@ pub fn rcbottom_up_construction(depth: i32) {
     for i in 0..inum_iters {
         let mut temp_tree = rcmake_tree(depth);
     }
-    println!("RC bottom up took {}us", start.elapsed().as_micros());
 }
 
-use garbage_collector::utils::tagged_ptr::TaggedPointer;
-
-fn main() {
-    let x = false;
-    let mut ptr = TaggedPointer::new(&x as *const bool as *mut u8);
-    println!("{:p}", ptr.untagged());
-    ptr.set_bit(3);
-    println!("{:p}", ptr.raw);
-    println!("{:p}", ptr.untagged());
-}
+criterion_group!(benches, bench_top_down);
+criterion_main!(benches);

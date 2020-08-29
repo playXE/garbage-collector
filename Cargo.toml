@@ -20,3 +20,12 @@ default = ["secure"]
 cc = "1"
 cmake = "0.1"
 
+[profile.release]
+debug = true
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "gcbench"
+harness = false

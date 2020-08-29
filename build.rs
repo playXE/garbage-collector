@@ -61,20 +61,7 @@ fn get_cmake_build_type() -> Result<CMakeBuildType, String> {
     })
 }
 
-macro_rules! cmd {
-    ($c: expr,$($arg: expr),*) => {
-        std::process::Command::new($c).args(&[$($arg),*]).spawn().unwrap().wait().unwrap();
-    };
-}
-
 fn main() {
-    cmd!("mkdir", "c_src");
-    cmd!(
-        "git",
-        "clone",
-        "https://github.com/microsoft/mimalloc",
-        "c_src/mimalloc"
-    );
     let mut cfg = &mut Config::new("c_src/mimalloc");
 
     if cfg!(feature = "override") {
@@ -93,8 +80,11 @@ fn main() {
 
     // Inject MI_DEBUG=0
     // This set mi_option_verbose and mi_option_show_errors options to false.
-    cfg = cfg.define("mi_defines", "MI_DEBUG=0");
-
+    if option_env!("MI_DEBUG").is_none() {
+        cfg = cfg.define("mi_defines", "MI_DEBUG=0");
+    } else {
+        cfg = cfg.define("mi_defines", "MI_DEBUG=1");
+    }
     let (is_debug, win_folder) = match get_cmake_build_type() {
         Ok(CMakeBuildType::Debug) => (true, "Debug"),
         Ok(CMakeBuildType::Release) => (false, "Release"),
@@ -159,6 +149,4 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", dst.display());
     println!("cargo:rustc-link-lib={}", out_name);
-    cmd!("rm", "-rf", "c_src/mimalloc");
-    cmd!("rm", "-rf", "c_src");
 }
