@@ -22,7 +22,7 @@ cmake = "0.1"
 
 [profile.release]
 debug = true
-
+codegen-units = 2
 [dev-dependencies]
 criterion = "0.3"
 

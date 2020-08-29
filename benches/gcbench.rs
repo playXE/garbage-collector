@@ -1,7 +1,5 @@
 use garbage_collector::*;
 pub struct Node {
-    i: i32,
-    j: i32,
     left: Option<Handle<Self>>,
     right: Option<Handle<Self>>,
 }
@@ -21,8 +19,6 @@ impl GcObject for Node {
 impl Node {
     pub fn leaf() -> Self {
         Self {
-            i: 0,
-            j: 0,
             left: None,
             right: None,
         }
@@ -35,7 +31,7 @@ static STRETCH_TREE_DEPTH: AtomicI32 = AtomicI32::new(0);
 static LONG_LIVED_TREE_DEPTH: AtomicI32 = AtomicI32::new(0);
 
 pub const fn tree_size(i: i32) -> i32 {
-    (1 << (i + 1) - 1)
+    1 << (i + 1) - 1
 }
 
 pub fn num_iters(i: i32) -> i32 {
@@ -49,8 +45,8 @@ pub fn populate(depth: i32, mut this_node: Handle<Node>) {
         return;
     } else {
         depth = depth - 1;
-        let mut left = local.allocate(Node::leaf());
-        let mut right = local.allocate(Node::leaf());
+        let left = local.allocate(Node::leaf());
+        let right = local.allocate(Node::leaf());
         local.write_barrier(this_node, left.to_heap());
         this_node.left = Some(left.to_heap());
         local.write_barrier(this_node, right.to_heap());
@@ -68,8 +64,6 @@ pub fn make_tree(idepth: i32) -> Root<Node> {
         local.allocate(Node::leaf())
     } else {
         let mut node = local.allocate(Node {
-            i: 0,
-            j: 0,
             left: None,
             right: None,
         });
@@ -84,32 +78,21 @@ pub fn make_tree(idepth: i32) -> Root<Node> {
     }
 }
 
-const DEPTH: i32 = 6;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 
 pub fn top_down_construction(depth: i32) {
-    let mut inum_iters = num_iters(depth);
-
-    let mut i = 0;
     let local = local_allocator();
-    for i in 0..inum_iters {
-        let mut temp_tree = local.allocate(Node::leaf());
-        populate(depth, temp_tree.to_heap());
-    }
+
+    let temp_tree = local.allocate(Node::leaf());
+    populate(depth, temp_tree.to_heap());
 }
 
 pub fn bottom_up_construction(depth: i32) {
-    let mut inum_iters = num_iters(depth);
-
-    let mut i = 0;
-
-    for i in 0..inum_iters {
-        let mut temp_tree = make_tree(depth);
-    }
+    let _temp_tree = make_tree(depth);
 }
 use criterion::BenchmarkId;
 fn bench_top_down(c: &mut Criterion) {
-    let lc = local_allocator();
+    let _lc = local_allocator();
     STRETCH_TREE_DEPTH.store(7, Ordering::Relaxed);
     LONG_LIVED_TREE_DEPTH.store(6, Ordering::Relaxed);
     let mut group = c.benchmark_group("binary tree");
@@ -256,24 +239,12 @@ pub fn rcmake_tree(idepth: i32) -> Rc<RCNode> {
 }
 
 pub fn rctop_down_construction(depth: i32) {
-    let mut inum_iters = num_iters(depth);
-
-    let mut i = 0;
-
-    for i in 0..inum_iters {
-        let mut temp_tree = Rc::new(RCNode::leaf());
-        rcpopulate(depth, &mut temp_tree);
-    }
+    let mut temp_tree = Rc::new(RCNode::leaf());
+    rcpopulate(depth, &mut temp_tree);
 }
 
 pub fn rcbottom_up_construction(depth: i32) {
-    let mut inum_iters = num_iters(depth);
-
-    let mut i = 0;
-
-    for i in 0..inum_iters {
-        let mut temp_tree = rcmake_tree(depth);
-    }
+    let _temp_tree = rcmake_tree(depth);
 }
 
 criterion_group!(benches, bench_top_down);

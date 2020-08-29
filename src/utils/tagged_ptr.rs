@@ -41,7 +41,7 @@ impl<T> TaggedPointer<T> {
 
     /// Returns a new TaggedPointer with the given bit set.
     pub fn with_bit(raw: *mut T, bit: usize) -> TaggedPointer<T> {
-        let mut pointer = Self::new(raw);
+        let pointer = Self::new(raw);
 
         pointer.set_bit(bit);
 

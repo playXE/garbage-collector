@@ -130,7 +130,7 @@ extern "C" {
     fn mi_heap_new() -> *mut MiHeapC;
     fn mi_heap_delete(heap: *mut MiHeapC);
     fn mi_heap_collect(heap: *mut MiHeapC);
-    fn mi_heap_zalloc(heap: *mut MiHeapC, size: usize) -> *mut ();
+    fn mi_heap_zalloc(heap: *mut MiHeapC, size: usize) -> *mut u8;
     fn mi_free(p: *mut u8);
 }
 
@@ -140,7 +140,7 @@ impl MiHeap {
     }
 
     pub fn malloc(&self, size: usize) -> *mut () {
-        unsafe { mi_heap_zalloc(self.0, size) }
+        unsafe { mi_heap_zalloc(self.0, size).cast() }
     }
 
     pub fn collect(&self) {
@@ -505,7 +505,7 @@ impl GlobalAllocator {
             }
         }
     }
-    pub(crate) fn live_stack(&self) -> &AllocStack {
+    pub(crate) fn live_stack(&self) -> &mut AllocStack {
         unsafe {
             if self.stack.load(Ordering::Relaxed) {
                 self.stacks[0].get_locked()
@@ -547,24 +547,107 @@ impl GlobalAllocator {
                 }
             }
 
-            let cur_sticky = self.next_sticky.load(Ordering::Relaxed) && false; // sticky gc does not work yet :(
+            let cur_sticky = self.next_sticky.load(Ordering::Relaxed) && self.generational;
 
-            let (stack, freed, duration) = if !cur_sticky {
+            let (freed, duration) = if !cur_sticky {
                 let start = std::time::Instant::now();
                 self.mark();
+                let mut freed = 0;
+                if self.generational {
+                    let new_stack = AllocStack::new();
+                    let old_gen = self.live_stack();
 
-                let (stack, freed) = self.alloc_stack().sweep();
+                    let mut head = old_gen.head;
+                    while head.is_non_null() {
+                        let next = Ref::new(head.header.next);
+                        if head.header.is_marked() {
+                            head.header.unmark();
+                            head.header.next = 0 as *mut _;
+                            new_stack.push_unsync(head.ptr);
+                        } else {
+                            freed += head.trait_object().size() + core::mem::size_of::<GcHeader>();
 
+                            core::ptr::drop_in_place(head.trait_object());
+
+                            //println!("free {:p}", head.ptr);
+                            MiHeap::free(head.ptr);
+                        }
+                        head = next;
+                    }
+
+                    let new_gen = self.alloc_stack();
+                    let mut head = new_gen.head;
+                    while head.is_non_null() {
+                        let next = Ref::new(head.header.next);
+                        if head.header.is_marked() {
+                            head.header.unmark();
+                            head.header.next = 0 as *mut _;
+                            new_stack.push_unsync(head.ptr);
+                        } else {
+                            freed += head.trait_object().size() + core::mem::size_of::<GcHeader>();
+
+                            core::ptr::drop_in_place(head.trait_object());
+
+                            //println!("not promoted free {:p}", head.ptr);
+                            MiHeap::free(head.ptr);
+                        }
+                        head = next;
+                    }
+                    *old_gen = new_stack;
+                    *new_gen = AllocStack::new();
+                } else {
+                    let new_stack = AllocStack::new();
+                    let stack = self.alloc_stack();
+                    let mut head = stack.head;
+
+                    while head.is_non_null() {
+                        let next = head.header.next;
+                        if head.header.is_marked() {
+                            head.header.unmark();
+                            head.header.next = 0 as *mut _;
+                            new_stack.push_unsync(head.ptr);
+                        } else {
+                            freed += head.trait_object().size() + core::mem::size_of::<GcHeader>();
+
+                            core::ptr::drop_in_place(head.trait_object());
+
+                            //println!("not promoted free {:p}", head.ptr);
+                            MiHeap::free(head.ptr);
+                        }
+                        head = Ref::new(next);
+                    }
+
+                    *stack = new_stack;
+                }
                 let end = start.elapsed();
-                (stack, freed, end.as_nanos() as u64)
+                (freed, end.as_nanos() as u64)
             } else {
                 let start = std::time::Instant::now();
                 self.mark_sticky();
+                let mut freed = 0;
+                //let (stack, freed) = self.alloc_stack().sweep_sticky();
+                let old_gen = self.live_stack();
+                let new_gen = self.alloc_stack();
+                let mut head = new_gen.head;
+                while head.is_non_null() {
+                    let next = Ref::new(head.header.next);
+                    if head.header.is_sticky_marked() {
+                        head.header.sticky_unmark();
+                        head.header.next = 0 as *mut _;
+                        old_gen.push_unsync(head.ptr);
+                    } else {
+                        freed += head.trait_object().size() + core::mem::size_of::<GcHeader>();
 
-                let (stack, freed) = self.alloc_stack().sweep_sticky();
+                        core::ptr::drop_in_place(head.trait_object());
 
+                        //println!("new free {:p}", head.ptr);
+                        MiHeap::free(head.ptr);
+                    }
+                    head = next;
+                }
+                *new_gen = AllocStack::new();
                 let end = start.elapsed();
-                (stack, freed, end.as_nanos() as u64)
+                (freed, end.as_nanos() as u64)
             };
             const STICKY_GC_THROUGHPUT_ADJ: f64 = 1.0;
             #[inline(always)]
@@ -584,7 +667,6 @@ impl GlobalAllocator {
                     );
                 }
             } else {
-                self.swap_stacks();
                 self.ms_iters.fetch_add(1, Ordering::Relaxed);
                 self.total_freed_ms.fetch_add(freed, Ordering::Relaxed);
                 self.total_ms_time.fetch_add(duration, Ordering::Relaxed);
@@ -604,11 +686,9 @@ impl GlobalAllocator {
                     Ordering::Relaxed,
                 );
             }
-            *self.alloc_stack() = stack;
-            self.alloc_stack().sweeps = self.alloc_stack().head;
+
             if !cur_sticky {
                 self.next_sticky.store(true, Ordering::Relaxed);
-                self.swap_stacks();
             } else {
                 let estimated_throughput = estimated_throughput(freed, duration) as f64;
                 if estimated_throughput * STICKY_GC_THROUGHPUT_ADJ
@@ -616,7 +696,6 @@ impl GlobalAllocator {
                     && self.ms_iters.load(Ordering::Relaxed) > 0
                 {
                     self.next_sticky.store(true, Ordering::Relaxed);
-                    self.swap_stacks();
                 } else {
                     self.next_sticky.store(false, Ordering::Relaxed);
                 }
