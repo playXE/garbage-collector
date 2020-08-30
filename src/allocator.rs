@@ -26,7 +26,8 @@ impl AllocStack {
     pub fn push_unsync(&self, value: *const GcBox<()>) {
         let node = unsafe { &mut *(value as *mut GcBox<()>) };
         let current = self.head.as_atomic().load(Ordering::Relaxed);
-        node.header.next = current;
+        node.header.next =
+            TaggedPointer::with_tags_from(node.header.next, TaggedPointer::new(current));
         self.head.as_atomic().store(&mut *node, Ordering::Relaxed);
     }
 
@@ -34,7 +35,8 @@ impl AllocStack {
         let node = unsafe { &mut *(value as *mut GcBox<()>) };
         let mut current = self.head.as_atomic().load(Ordering::Relaxed);
         loop {
-            node.header.next = current;
+            node.header.next =
+                TaggedPointer::with_tags_from(node.header.next, TaggedPointer::new(current));
             match self.head.as_atomic().compare_exchange_weak(
                 current,
                 &mut *node,
@@ -49,69 +51,6 @@ impl AllocStack {
                 }
             }
         }
-    }
-
-    pub fn sweep(&self) -> (Self, usize) {
-        let new = Self::new();
-        let mut freed = 0;
-        let mut current = self.head;
-
-        while current.is_non_null() {
-            let next = current.header.next;
-            if current.header.is_marked() {
-                //current.header.unmark();
-                current.header.vtable = TaggedPointer::new(current.header.vtable.untagged());
-                //current.header.set_old();
-                current.header.next = 0 as *mut _;
-                new.push(current.ptr);
-            } else {
-                current.header.next = 0 as *mut _;
-
-                freed += current.trait_object().size() + core::mem::size_of::<GcHeader>();
-                unsafe {
-                    core::ptr::drop_in_place(current.trait_object());
-                }
-                //println!("free {:p}", current.ptr);
-                MiHeap::free(current.ptr);
-            }
-            current = Ref::new(next);
-        }
-        (new, freed)
-    }
-
-    pub fn sweep_sticky(&self) -> (Self, usize) {
-        let mut new = Self::new();
-
-        let mut current = self.head;
-        if current.is_null() {
-            return (Self::new(), 0);
-        }
-        let mut freed = 0;
-        while current.is_non_null() && current.ptr != self.sweeps.ptr {
-            let next = current.header.next;
-            if self.sweeps.ptr == next {
-                break;
-            }
-            assert!(current.header.is_new());
-            if current.header.is_sticky_marked() {
-                current.header.vtable = TaggedPointer::new(current.header.vtable.untagged());
-                current.header.next = 0 as *mut _;
-                current.header.set_old();
-                new.push(current.ptr);
-            } else {
-                current.header.next = 0 as *mut _;
-                freed += current.trait_object().size() + core::mem::size_of::<GcHeader>();
-                unsafe {
-                    core::ptr::drop_in_place(current.trait_object());
-                }
-                //println!("sticky free {:p}", current.ptr);
-                MiHeap::free(current.ptr);
-            }
-
-            current = Ref::new(next);
-        }
-        new.sweeps = new.head;
-        (new, freed)
     }
 }
 
@@ -246,12 +185,12 @@ impl LocalAllocator {
             val: 0,
             header: GcHeader {
                 vtable: TaggedPointer::new(vtable),
-                next: 0 as *mut _,
+                next: TaggedPointer::null(),
             },
         });
         allocation.header.unmark();
         allocation.header.sticky_unmark();
-        //allocation.header.set_new();
+        allocation.header.set_new();
         get_heap().alloc_stack().push(allocation.ptr.cast());
         get_heap().allocated.fetch_add(size, Ordering::Relaxed);
         debug_assert!(get_heap().alloc_stack().head.is_non_null());
@@ -277,13 +216,13 @@ impl LocalAllocator {
             val: value,
             header: GcHeader {
                 vtable: TaggedPointer::new(vtable),
-                next: 0 as *mut _,
+                next: TaggedPointer::null(),
             },
         });
 
         allocation.header.unmark();
         allocation.header.sticky_unmark();
-        //allocation.header.set_new();
+        allocation.header.set_new();
         get_heap().allocated.fetch_add(size, Ordering::Relaxed);
         get_heap().alloc_stack().push(allocation.ptr.cast());
         debug_assert!(get_heap().alloc_stack().head.is_non_null());
@@ -401,6 +340,7 @@ pub(crate) fn pause_for_collect() {
     if let Some(tla) = get_tla() {
         tla.pause_for_collect();
     }
+    // No need to pause for non-gc
 }
 
 static PAUSE_FOR_COLLECT: AtomicU32 = AtomicU32::new(0x00000000);
@@ -444,7 +384,7 @@ impl GlobalAllocator {
             stack: AtomicBool::new(false),
             print_timings: AtomicBool::new(false),
             global_rootlist: Mutex::new(RootList::new()),
-            generational: false,
+            generational: !true,
             local_allocs: ProtectedBy::new(&THREAD_STATE_CHANGE_LOCK, Default::default()),
             local_pool: ProtectedBy::new(&THREAD_STATE_CHANGE_LOCK, Default::default()),
             mark_stack: ProtectedBy::new(&THREAD_STATE_CHANGE_LOCK, Default::default()),
@@ -559,10 +499,11 @@ impl GlobalAllocator {
 
                     let mut head = old_gen.head;
                     while head.is_non_null() {
-                        let next = Ref::new(head.header.next);
+                        let next = Ref::new(head.header.next.untagged());
                         if head.header.is_marked() {
                             head.header.unmark();
-                            head.header.next = 0 as *mut _;
+                            head.header.next = TaggedPointer::null();
+                            head.header.set_old();
                             new_stack.push_unsync(head.ptr);
                         } else {
                             freed += head.trait_object().size() + core::mem::size_of::<GcHeader>();
@@ -578,10 +519,11 @@ impl GlobalAllocator {
                     let new_gen = self.alloc_stack();
                     let mut head = new_gen.head;
                     while head.is_non_null() {
-                        let next = Ref::new(head.header.next);
+                        let next = Ref::new(head.header.next.untagged());
                         if head.header.is_marked() {
                             head.header.unmark();
-                            head.header.next = 0 as *mut _;
+                            head.header.next = TaggedPointer::null();
+                            head.header.set_old();
                             new_stack.push_unsync(head.ptr);
                         } else {
                             freed += head.trait_object().size() + core::mem::size_of::<GcHeader>();
@@ -601,10 +543,11 @@ impl GlobalAllocator {
                     let mut head = stack.head;
 
                     while head.is_non_null() {
-                        let next = head.header.next;
+                        let next = Ref::new(head.header.next.untagged());
                         if head.header.is_marked() {
                             head.header.unmark();
-                            head.header.next = 0 as *mut _;
+                            head.header.next = TaggedPointer::null();
+                            head.header.set_old();
                             new_stack.push_unsync(head.ptr);
                         } else {
                             freed += head.trait_object().size() + core::mem::size_of::<GcHeader>();
@@ -614,7 +557,7 @@ impl GlobalAllocator {
                             //println!("not promoted free {:p}", head.ptr);
                             MiHeap::free(head.ptr);
                         }
-                        head = Ref::new(next);
+                        head = next;
                     }
 
                     *stack = new_stack;
@@ -630,10 +573,11 @@ impl GlobalAllocator {
                 let new_gen = self.alloc_stack();
                 let mut head = new_gen.head;
                 while head.is_non_null() {
-                    let next = Ref::new(head.header.next);
+                    let next = Ref::new(head.header.next.untagged());
                     if head.header.is_sticky_marked() {
                         head.header.sticky_unmark();
-                        head.header.next = 0 as *mut _;
+                        head.header.next = TaggedPointer::null();
+                        head.header.set_old();
                         old_gen.push_unsync(head.ptr);
                     } else {
                         freed += head.trait_object().size() + core::mem::size_of::<GcHeader>();
@@ -726,6 +670,7 @@ impl GlobalAllocator {
         self.mark_stack_locked().clear();
         self.process_remembred_sets(true);
         self.process_sticky_gray_stack();
+        self.process_remembred_sets(false); // clear remembered sets
     }
     fn process_gray_stack(&self) {
         let stack = self.mark_stack_locked();
@@ -781,7 +726,7 @@ impl GlobalAllocator {
             }
         } else {
             for local in locals.iter() {
-                local.set.prune();
+                local.set.clear();
             }
         }
     }
@@ -877,5 +822,11 @@ impl<T: GcObject> Clone for VirtualHandle<T> {
 impl<T: GcObject> GcObject for VirtualHandle<T> {
     fn visit_references(&self, visit: &mut dyn FnMut(*const GcBox<()>)) {
         visit(self.gc_box.cast());
+    }
+}
+
+pub fn gc_safepoint() {
+    if PAUSE_FOR_COLLECT.load(Ordering::Relaxed) > 0 {
+        pause_for_collect();
     }
 }

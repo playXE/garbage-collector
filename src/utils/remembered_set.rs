@@ -154,7 +154,14 @@ impl RememberedSet {
             index: 0,
         }
     }
+    pub fn clear(&self) {
+        let (mut head, tail) = Chunk::boxed();
 
+        // After this `head` is the old head, and `self.head` will be an
+        // empty chunk.
+        mem::swap(&mut head, unsafe { &mut *self.head.get() });
+        *get_mut(&self.tail) = tail;
+    }
     /// Prunes the remembered set by removing pointers to unmarked objects.
     pub fn prune(&self) {
         let (mut head, tail) = Chunk::boxed();

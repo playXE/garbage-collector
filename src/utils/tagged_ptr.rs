@@ -65,13 +65,22 @@ impl<T> TaggedPointer<T> {
     pub fn without_tags(self) -> Self {
         Self::new(self.untagged())
     }
+    #[inline]
+    pub fn with_tags_from(self, other: TaggedPointer<T>) -> Self {
+        let mask = 0x03;
+        let a = self.raw as usize;
+        let b = other.raw as usize;
+        Self::new((a & mask | b & !mask) as *mut T)
+    }
 
     /// Returns true if the given bit is set.
+    #[inline]
     pub fn bit_is_set(self, bit: usize) -> bool {
         self::bit_is_set(self.atomic_load(), bit)
     }
 
     /// Sets the given bit.
+    #[inline]
     pub fn set_bit(&self, bit: usize) -> bool {
         let atomic = self.as_atomic();
         let old_word = atomic.load(Ordering::Relaxed);
@@ -81,7 +90,7 @@ impl<T> TaggedPointer<T> {
         }
         (old_word as usize & mask) != 0
     }
-
+    #[inline]
     pub fn unset_bit(&self, bit: usize) -> bool {
         let atomic = self.as_atomic();
         let old_word = atomic.load(Ordering::Relaxed);

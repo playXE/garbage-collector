@@ -21,7 +21,7 @@ pub trait GcObject {
 pub struct GcHeader {
     /// Virtual table for GcObject
     pub(crate) vtable: TaggedPointer<()>,
-    pub(crate) next: *mut GcBox<()>,
+    pub(crate) next: TaggedPointer<GcBox<()>>,
     #[cfg(feature = "concurrent")]
     pub(crate) color: AtomicU8,
 }
@@ -38,17 +38,17 @@ const GC_GRAY: u8 = 0b01;
 const GC_BLACK: u8 = 0b10;
 impl GcHeader {
     pub fn is_new(&self) -> bool {
-        !self.vtable.atomic_bit_is_set(3)
+        !self.next.atomic_bit_is_set(0)
     }
     pub fn is_old(&self) -> bool {
-        self.vtable.atomic_bit_is_set(3)
+        self.next.atomic_bit_is_set(0)
     }
     pub fn set_old(&self) {
-        self.vtable.atomic_set_bit(3);
+        self.next.atomic_set_bit(0);
     }
 
     pub fn set_new(&self) {
-        self.vtable.atomic_unset_bit(3);
+        self.next.atomic_unset_bit(0);
     }
 
     pub fn sync_mark(&self) -> bool {
@@ -164,11 +164,17 @@ pub fn gc_thread<
     f: F,
 ) -> std::thread::JoinHandle<R> {
     std::thread::spawn(move || {
-        let id = allocator::get_heap()
-            .local_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let local = std::sync::Arc::new(allocator::LocalAllocator::new(id));
-        allocator::get_heap().add_local(local.clone());
+        let candidate = allocator::get_heap().get_pooled_allocator();
+        let local = if let Some(candidate) = candidate {
+            candidate
+        } else {
+            let id = allocator::get_heap()
+                .local_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let local = std::sync::Arc::new(allocator::LocalAllocator::new(id));
+            allocator::get_heap().add_local(local.clone());
+            local
+        };
         allocator::TLA.with(|x| {
             *x.borrow_mut() = Some(local.clone());
         });
@@ -234,7 +240,9 @@ impl<T: GcObject> Handle<T> {
     pub fn gc_ptr(&self) -> *const GcBox<()> {
         self.ptr.cast::<_>().as_ptr()
     }
-
+    pub fn ptr_eq(this: Self, other: Self) -> bool {
+        this.ptr == other.ptr
+    }
     pub unsafe fn from_raw<U>(x: *const U) -> Self {
         Self {
             ptr: std::ptr::NonNull::new((x as *mut U).cast()).unwrap(),
@@ -305,11 +313,17 @@ pub fn local_allocator() -> Arc<allocator::LocalAllocator> {
             return tla.clone();
         }
         drop(xx);
-        let id = allocator::get_heap()
-            .local_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let local = std::sync::Arc::new(allocator::LocalAllocator::new(id));
-        allocator::get_heap().add_local(local.clone());
+        let candidate = allocator::get_heap().get_pooled_allocator();
+        let local = if let Some(candidate) = candidate {
+            candidate
+        } else {
+            let id = allocator::get_heap()
+                .local_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let local = std::sync::Arc::new(allocator::LocalAllocator::new(id));
+            allocator::get_heap().add_local(local.clone());
+            local
+        };
         *x.borrow_mut() = Some(local.clone());
 
         local
