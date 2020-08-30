@@ -304,6 +304,17 @@ impl<T: GcObject> Drop for Root<T> {
     }
 }
 
+impl<T: GcObject> Clone for Root<T> {
+    fn clone(&self) -> Self {
+        let mut inn = self.inner;
+        inn.rc += 1;
+        Self {
+            inner: self.inner,
+            _marker: Default::default(),
+        }
+    }
+}
+
 /// Get current local allocator or create new one. If you sure that you do not have access to local allocator
 /// then use this function and at the end of thread execution detach this allocator manually.
 pub fn local_allocator() -> Arc<allocator::LocalAllocator> {
@@ -343,4 +354,30 @@ pub fn detach_local_allocator(local: Arc<allocator::LocalAllocator>) {
     allocator::get_heap().remove_local_locked(&local);
     allocator::get_heap().return_to_pool_locked(local);
     drop(l);
+}
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub struct GCConfig {
+    generational: bool,
+    print: bool,
+}
+
+impl GCConfig {
+    pub fn new(generational: bool, print: bool) -> Self {
+        Self {
+            generational,
+            print,
+        }
+    }
+}
+
+use once_cell::sync::OnceCell;
+
+pub fn gc_config(c: Option<GCConfig>) -> GCConfig {
+    static CONF: OnceCell<GCConfig> = OnceCell::new();
+    if let Some(c) = c {
+        *CONF.get_or_init(|| c)
+    } else {
+        *CONF.get_or_init(|| GCConfig::new(false, false))
+    }
 }

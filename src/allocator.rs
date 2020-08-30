@@ -367,6 +367,7 @@ pub struct GlobalAllocator {
 
 impl GlobalAllocator {
     pub fn new() -> Self {
+        let conf = gc_config(None);
         Self {
             local_id: AtomicUsize::new(0),
             total_freed_ms: AtomicUsize::new(0),
@@ -382,9 +383,9 @@ impl GlobalAllocator {
                 ProtectedBy::new(&THREAD_STATE_CHANGE_LOCK, AllocStack::new()),
             ],
             stack: AtomicBool::new(false),
-            print_timings: AtomicBool::new(false),
+            print_timings: AtomicBool::new(conf.print),
             global_rootlist: Mutex::new(RootList::new()),
-            generational: !true,
+            generational: conf.generational,
             local_allocs: ProtectedBy::new(&THREAD_STATE_CHANGE_LOCK, Default::default()),
             local_pool: ProtectedBy::new(&THREAD_STATE_CHANGE_LOCK, Default::default()),
             mark_stack: ProtectedBy::new(&THREAD_STATE_CHANGE_LOCK, Default::default()),
